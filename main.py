@@ -4,8 +4,9 @@ import sys
 import json
 import magic
 import os
-from urllib import parse
 from time import time
+from httpMessage import httpResponse, httpRequest
+from email.utils import formatdate
 
 TIMEOUT = 5
 MAX_KEEP_ALIVE = 200
@@ -23,91 +24,98 @@ def readConfig():
 		exit()
 
 
-# vhost = {hostname : document root}
-def processRequest(request, vhosts):
-	# print(request)
-	lines = request.strip().split('\r\n')
-	requestLine = lines[0]
-	resourceUrl = parse.unquote(requestLine.split()[1])
-	headers = {}
-	for headerLine in lines[1:]:
-		headers[headerLine.split(': ')[0].lower()] = headerLine.split(': ')[1].lower()
+def generateResponse(request, vhosts):
+	response = httpResponse()
+	response.setStatusCode(404)
+	host = request.getHeaderValue('host').split(':')[0]
+	persistance = request.getHeaderValue('connection')
+	if host not in vhosts:
+		response.setStatusCode(404)
+		response.setEntity('REQUESTED DOMAIN NOT FOUND'.encode())
+		return response, False
 
-	# print(headers)
-	host = headers['host'].split(':')[0]
-	persistance = headers.get('connection', 'close')
 	
-	response = bytes()
-	resource = bytes()
-	if host in vhosts:
-		docRoot = vhosts[host]
-		fullPath = docRoot + resourceUrl
-		try:
-			connectionHeader = 'Connection: '
-			if persistance == 'keep-alive':
-				connectionHeader = connectionHeader + 'keep-alive\r\nKeep-Alive: timeout=' + str(TIMEOUT) + ', max=' + str(MAX_KEEP_ALIVE) + '\r\n'
-			else:
-				connectionHeader = connectionHeader + 'Close\r\n'
+	docRoot = vhosts[host]
+	fullPath = docRoot + request.getURL()
+
+	response.setHeader('server', 'santinos_server')
+	response.setHeader('date', formatdate(timeval=None, localtime=False, usegmt=True))
+	response.setHeader('etag', 'i have no idea what this is')
+	response.setHeader('accept-ranges', 'bytes')
+	response.setHeader('connection', 'keep-alive' if persistance == 'keep-alive' else 'close')
+	if persistance == 'keep-alive':
+		response.setHeader('keep-alive', 'timeout=' + str(TIMEOUT) + ', max=' + str(MAX_KEEP_ALIVE))
+
+	try:
+		resource = open(fullPath, 'rb')
+		response.setHeader('content-type', magic.Magic(mime=True).from_file(fullPath))
+
+		if request.containsHeader('range'):
+			response.setStatusCode(206)
+			byteRange = request.getHeaderValue('range')
+			byteOffsets = byteRange.split('=')[1].split('-')
+			start = int(byteOffsets[0])
 			
-			if 'range' in headers:
-				byteRange = headers['range']
-				byteOffsets = byteRange.split('=')[1].split('-')
-				start = int(byteOffsets[0])
-				end = -1
-				if byteOffsets[1]:
-					end = int(byteOffsets[1])
-				
-				f = open(fullPath, 'rb')
-				f.seek(start)
-				
-				if end == -1:
-					resource = f.read()
-				else:
-					resource = f.read(end - start + 1)
-
-				mime = magic.Magic(mime=True)
-				contentType = mime.from_file(fullPath)
-
-				responseStr = 'HTTP/1.1 206 Partial Content\r\nServer: santinos_server\r\nAccept-Ranges: bytes\r\n' + connectionHeader + 'Date: sup\r\nEtag: ra_ubedurebaa\r\nContent-Type: ' + contentType + '\r\nContent-Length: ' + str(len(resource)) + '\r\nContent-Range: bytes ' + byteOffsets[0] + '-' + byteOffsets[1] + '/' + str(os.path.getsize(fullPath)) + '\r\n\r\n'
-			else:
-				resource = open(fullPath, 'rb').read()
-				mime = magic.Magic(mime=True)
-				contentType = mime.from_file(fullPath)
-				
-				responseStr = 'HTTP/1.1 200 OK\r\nServer: santinos_server\r\nAccept-Ranges: bytes\r\n' + connectionHeader + 'Date: sup\r\nEtag: ra_ubedurebaa\r\nContent-Type: ' + contentType + '\r\nContent-Length: ' + str(len(resource)) + '\r\n\r\n'
-
-
-			# print(responseStr)
-			response = responseStr.encode()
-			if requestLine.split()[0].lower() == 'get':
-				response = response + resource
+			resource.seek(start)
 			
-		except Exception as e:
-			print(e)
-			response = 'HTTP/1.1 404 Not Found\r\n\r\n'.encode()
-	else:
-		response = ('HTTP/1.1 404 Not Found\r\nContent-Length:' + str(len('REQUESTED DOMAIN NOT FOUND'.encode())) + '\r\n\r\nREQUESTED DOMAIN NOT FOUND').encode()
+			end = -1
+			if byteOffsets[1]:
+				end = int(byteOffsets[1])
+				response.setHeader('content-range', byteRange + '/' + str(os.path.getsize(fullPath)))
+				response.setEntity(resource.read(end - start + 1))
+			else:
+				response.setHeader('content-range', byteRange + '/' + str(os.path.getsize(fullPath)))
+				response.setEntity(resource.read())
 
-	return response, persistance == 'keep-alive'
+		else:
+			response.setStatusCode(200)
+			data = resource.read()
+			response.setEntity(data)
 
+
+
+	except Exception as e:
+		print(e)
+		response.setStatusCode(404)
+		return response, False
+
+	return response, response.getHeaderValue('connection') == 'keep-alive'
+
+
+def writeLog(date, request, response):
+	pass
+
+
+
+def processRequest(addr, request, vhosts):
+	response, keepAlive = generateResponse(request, vhosts)
+
+	if request.getMethod() == 'head':
+		return response.headToString().encode(), keepAlive
+	return response.toBytes(), keepAlive
 
 
 def requestHandler(conn, addr, vhosts):
 	try:
 		for i in range(MAX_KEEP_ALIVE):
-			requestLine = conn.recv(1024).decode()
-			fullRequest = requestLine
-			while not fullRequest.endswith('\r\n\r\n'):
-				line = conn.recv(1024).decode()
-				# print(line)
-				fullRequest = fullRequest + line
+			request = conn.recv(1024)
+			while not request.endswith(b'\r\n\r\n'):
+				line = conn.recv(1024)
+				request += line
 
-			start = time()
-			response, keepAlive = processRequest(fullRequest, vhosts)
-			# print(keepAlive)
+			request = httpRequest(request)
+			
+			dateReceived = formatdate(timeval=None, localtime=False, usegmt=True)
+
+			response, keepAlive = processRequest(addr, request, vhosts)
+
+			writeLog(dateReceived, request, response)
+
 			conn.send(response)
+
 			if not keepAlive: 
 				break
+
 	except Exception as e: 
 		print(e)
 		conn.close()
@@ -122,7 +130,6 @@ def serverHandler(serverAddr, vhosts):
 	s.bind(serverAddr)
 	s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 	s.listen(1024)
-	# socket.setdefaulttimeout(TIMEOUT)
 
 	while True:
 		conn, addr = s.accept()
@@ -141,7 +148,6 @@ def main():
 	for s in config['server']:
 		socketAddresses.add((s['ip'], s['port']))
 
-	# print(socketAddresses)
 	for s in socketAddresses:
 		hosts = {}
 		for y in [(x['vhost'], x['documentroot']) for x in config['server'] if x['ip'] == s[0] and x['port'] == s[1]]:
