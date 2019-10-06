@@ -17,7 +17,7 @@ def main():
     args = parser.parse_args()
 
     try:
-        proc = subprocess.Popen(['python', args.http_server, args.config_file])
+        proc = subprocess.Popen(['python3', args.http_server, args.config_file])
     except subprocess.CalledProcessError as err:        
         print("Could not start server: {}".format(err))
 
