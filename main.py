@@ -19,7 +19,8 @@ def readConfig():
 	try:
 		configFile = open(sys.argv[1])
 		config = json.loads(configFile.read().lower())
-		os.mkdir(config['log'])
+		if not os.path.exists(config['log']):
+			os.mkdir(config['log'])
 	except:
 		print('Could not open configurations file')
 		exit()
@@ -93,7 +94,7 @@ def generateResponse(request, vhosts):
 				response.setEntity(data)
 
 	except Exception as e:
-		print(e)
+		# print(e)
 		response.setStatusCode(404)
 		return response, False
 
@@ -110,21 +111,10 @@ def writeLog(vhosts, logDir, date, ipAddr, request, response):
 		f = open(logDir + '/' + host + '.log', 'a')
 		f.write(' '.join(log))
 		f.write('\n')
-		# f.write('\n')
-		# print(logDir + '/' + host + '.log')
 	else:
 		f = open(logDir + '/error.log', 'a')
 		f.write(' '.join(log))
 		f.write('\n')
-		# f.write('\n')
-		# print(logDir + '/error.log')
-
-
-	# print(logPath)
-	# f = open(logPath, 'a')
-	# f.write(' '.join(log))
-	# f.write('\n')
-
 
 
 def requestHandler(conn, addr, vhosts):
@@ -134,8 +124,6 @@ def requestHandler(conn, addr, vhosts):
 			while not request.endswith(b'\r\n\r\n'):
 				line = conn.recv(1024)
 				request += line
-
-			# print(request.decode())
 
 			request = httpRequest(request)
 
@@ -153,8 +141,8 @@ def requestHandler(conn, addr, vhosts):
 				break
 
 	except Exception as e: 
-		print(e)
-		conn.close()
+		# print(e) # timed out
+		pass
 	finally:
 		conn.close()
 
