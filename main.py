@@ -19,6 +19,7 @@ def readConfig():
 	try:
 		configFile = open(sys.argv[1])
 		config = json.loads(configFile.read().lower())
+		os.mkdir(config['log'])
 	except:
 		print('Could not open configurations file')
 		exit()
