@@ -44,8 +44,9 @@ class httpRequest:
 class httpResponse:
 
 	statusMessages = {200 : 'OK',
-					  404 : 'Not Found',
-					  306 : 'Partial Content'}
+					  304 : 'Not Modified',
+					  306 : 'Partial Content',
+					  404 : 'Not Found'}
 
 	def __init__(self):
 		self.version = 'HTTP/1.1'
@@ -83,7 +84,7 @@ class httpResponse:
 
 
 	def setHeader(self, header, value):
-		self.headers[header.lower()] = value.lower()
+		self.headers[header.lower()] = str(value).lower()
 
 	def getHeaderValue(self, header):
 		return self.headers.get(header.lower(), None)

@@ -4,7 +4,7 @@ import sys
 import json
 import magic
 import os
-from time import time
+from time import time, localtime, strftime
 from httpMessage import httpResponse, httpRequest
 from email.utils import formatdate
 
@@ -40,17 +40,26 @@ def generateResponse(request, vhosts):
 
 	response.setHeader('server', 'santinos_server')
 	response.setHeader('date', formatdate(timeval=None, localtime=False, usegmt=True))
-	response.setHeader('etag', 'i have no idea what this is')
+	response.setHeader('etag', os.path.getmtime(fullPath))
 	response.setHeader('accept-ranges', 'bytes')
+	response.setHeader('content-length', 0)
 	response.setHeader('connection', 'keep-alive' if persistance == 'keep-alive' else 'close')
 	if persistance == 'keep-alive':
 		response.setHeader('keep-alive', 'timeout=' + str(TIMEOUT) + ', max=' + str(MAX_KEEP_ALIVE))
+
 
 	try:
 		resource = open(fullPath, 'rb')
 		response.setHeader('content-type', magic.Magic(mime=True).from_file(fullPath))
 
+		if request.containsHeader('if-none-match'):
+			etag = request.getHeaderValue('if-none-match')
+			if etag == str(os.path.getmtime(fullPath)):
+				response.setStatusCode(304)
+				return response, response.getHeaderValue('connection') == 'keep-alive'
+
 		if request.containsHeader('range'):
+			
 			response.setStatusCode(206)
 			byteRange = request.getHeaderValue('range')
 			byteOffsets = byteRange.split('=')[1].split('-')
@@ -62,17 +71,25 @@ def generateResponse(request, vhosts):
 			if byteOffsets[1]:
 				end = int(byteOffsets[1])
 				response.setHeader('content-range', byteRange + '/' + str(os.path.getsize(fullPath)))
-				response.setEntity(resource.read(end - start + 1))
+				if request.getMethod == 'head':
+					response.setHeader('content-length', end - start + 1)
+				else:
+					response.setEntity(resource.read(end - start + 1))
+
 			else:
 				response.setHeader('content-range', byteRange + '/' + str(os.path.getsize(fullPath)))
-				response.setEntity(resource.read())
+				if request.getMethod == 'head':
+					response.setHeader('content-length', str(os.path.getsize(fullPath)) - start + 1)
+				else:
+					response.setEntity(resource.read())
 
 		else:
 			response.setStatusCode(200)
 			data = resource.read()
-			response.setEntity(data)
-
-
+			if request.getMethod() == 'head':
+				response.setHeader('content-length', str(os.path.getsize(fullPath)))
+			else:
+				response.setEntity(data)
 
 	except Exception as e:
 		print(e)
@@ -81,18 +98,32 @@ def generateResponse(request, vhosts):
 
 	return response, response.getHeaderValue('connection') == 'keep-alive'
 
+# this isnt thread safe
+def writeLog(vhosts, logDir, date, ipAddr, request, response):
+	host = request.getHeaderValue('host').split(':')[0]
+	log = [strftime("[%a %b %d %H:%M:%S %Y]", date), ipAddr, host, request.getURL(), str(response.getStatusCode()),
+					 response.getHeaderValue('content-length'), request.getHeaderValue('user-agent')]
+	
+	logPath = logDir + '/' + (host if host in vhosts else 'error') + '.log'
+	if host in vhosts:
+		f = open(logDir + '/' + host + '.log', 'a')
+		f.write(' '.join(log))
+		f.write('\n')
+		# f.write('\n')
+		# print(logDir + '/' + host + '.log')
+	else:
+		f = open(logDir + '/error.log', 'a')
+		f.write(' '.join(log))
+		f.write('\n')
+		# f.write('\n')
+		# print(logDir + '/error.log')
 
-def writeLog(date, request, response):
-	pass
 
+	# print(logPath)
+	# f = open(logPath, 'a')
+	# f.write(' '.join(log))
+	# f.write('\n')
 
-
-def processRequest(addr, request, vhosts):
-	response, keepAlive = generateResponse(request, vhosts)
-
-	if request.getMethod() == 'head':
-		return response.headToString().encode(), keepAlive
-	return response.toBytes(), keepAlive
 
 
 def requestHandler(conn, addr, vhosts):
@@ -103,15 +134,19 @@ def requestHandler(conn, addr, vhosts):
 				line = conn.recv(1024)
 				request += line
 
+			# print(request.decode())
+
 			request = httpRequest(request)
+
+			dateReceived = localtime()
+
+			logDir = config['log']
+
+			response, keepAlive = generateResponse(request, vhosts)
+
+			writeLog(vhosts, logDir, dateReceived, addr[0], request, response)
 			
-			dateReceived = formatdate(timeval=None, localtime=False, usegmt=True)
-
-			response, keepAlive = processRequest(addr, request, vhosts)
-
-			writeLog(dateReceived, request, response)
-
-			conn.send(response)
+			conn.send(response.toBytes())
 
 			if not keepAlive: 
 				break
